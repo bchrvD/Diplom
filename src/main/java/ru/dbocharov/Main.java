@@ -14,9 +14,8 @@ import org.knowm.xchart.style.lines.SeriesLines;
 import org.knowm.xchart.style.markers.SeriesMarkers;
 
 import java.awt.*;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Scanner;
+import java.util.*;
+import java.util.List;
 
 public class Main {
 
@@ -28,7 +27,7 @@ public class Main {
 
         System.out.println("Введите количество точек разбиения: ");
         int countPoint = scanner.nextInt();
-
+        int n = countPoint + 1; // количество интервалов
         System.out.println("Введите функцию от x и t (например: sin(x)*t + x^2):");
         scanner.nextLine();
         String inputFunctionXT = scanner.nextLine();
@@ -43,86 +42,124 @@ public class Main {
                             String.valueOf((double) i / (double)
                                     (countPoint + 1))));
         }
-
+        System.out.println("Введите количество базисных функций omega: ");
+        int m = scanner.nextInt(); //количество омег
+        List<String> omegas = new ArrayList<>();
+        for (int i = 1; i<=m;i++){
+            omegas.add(omegaGenerator(i));
+        }
         String omega1 = "x*(x-1)";
         String omega2 = "x^2*(x-1)";
 
         double tau = 1d / (countPoint + 1);
 
-        double[][] matrix = new double[8][8];
+        double[][] matrix = new double[(n+1)*m][m*(n+1)];
 
-        for (int i = 0; i < matrix.length; i++) {
-            for (int j = 0; j < matrix.length; j++) {
-                matrix[i][j] = 0;
+        UnivariateIntegrator integrator = new SimpsonIntegrator();
+        //Заполннение матрицы
+        for (int i = 0; i < m; i++) {
+            final int powI = i + 1;
+            for (int j = 0; j < m; j++) {
+                final int powJ = j + 1;
+                UnivariateFunction productFunc = x -> {
+                    double omegaI = Math.pow(x, powI) * (x - 1);
+                    double omegaJ = Math.pow(x, powJ) * (x - 1);
+                    return omegaI * omegaJ;
+                };
+                UnivariateFunction derivativeFunc = x -> {
+                    double dOmegaI = (powI + 1) * Math.pow(x, powI) - powI * Math.pow(x, powI - 1);
+                    double dOmegaJ = (powJ + 1) * Math.pow(x, powJ) - powJ * Math.pow(x, powJ - 1);
+                    return dOmegaI * dOmegaJ;
+                };
+                double integral1 = integrator.integrate(1000, productFunc, 0, 1);
+                double integral2 = integrator.integrate(1000, derivativeFunc, 0, 1);
+                matrix[i][j] = -1.0 / tau * integral1 + 0.5 * integral2;
             }
         }
 
-        double el00 = -1d / tau * (1d / 30) + 0.5 * (1d / 3);
-        double el01 = -1d / tau * (1d / 60) + 0.5 * (1d / 6);
-        double el02 = 1d / tau * (1d / 30) + 0.5 * (1d / 3);
-        double el03 = 1 / tau * (1d / 60) + 0.5 * (1d / 6);
-        double el10 = -1d/tau * (1d/60) + 0.5*(1d/6);
-        double el11 = -1d / tau * (1d / 105) + 0.5 * (2d / 15);
-        double el12 = 1d / tau * (1d / 60) + 0.5 * (1d / 6);
-        double el13 = 1d / tau * (1d / 105) + 0.5 * (2d / 15);
-
-        matrix[0][0] = matrix[2][2] = matrix[4][4] = el00;
-        matrix[0][1] = matrix[2][3] = matrix[4][5] = el01;
-        matrix[0][2] = matrix[2][4] = matrix[4][6] = el02;
-        matrix[0][3] = matrix[2][5] = matrix[4][7] = el03;
-        matrix[1][0] = matrix[3][2] = matrix[5][4] = el10;
-        matrix[1][1] = matrix[3][3] = matrix[5][5] = el11;
-        matrix[1][2] = matrix[3][4] = matrix[5][6] = el12;
-        matrix[1][3] = matrix[3][5] = matrix[5][7] = el13;
-        matrix[6][0] = matrix[7][1] = 1;
-        matrix[6][6] = matrix[7][7] = -1;
-
-        //Заполнение правого вектора
-        double[] rightVector = new double[8];
-        UnivariateIntegrator integrator = new SimpsonIntegrator();
-        double a = 0d; // Нижний предел интегрирования
-        double b = 1d; // Верхний предел интегрирования
-
-        for (int k = 1; k <= countPoint + 1; k++) {
-            // Определяем моменты времени t_k и t_{k-1}
-            double t_k = (double) k / (double) (countPoint + 1);
-            double t_k_minus_1 = (double) (k - 1) / (double) (countPoint + 1);
-            String f_at_tk = valueInPoint.get(t_k);
-            String f_at_tk_minus_1 = valueInPoint.get(t_k_minus_1);
-
-            // Создаем строку для усредненной функции: (f(t_k) + f(t_{k-1})) / 2
-            String f_averaged_str = "((" + f_at_tk + ") + (" + f_at_tk_minus_1 + "))/2.0";
-
-            Expression expression1 = new ExpressionBuilder("(" + f_averaged_str + ")*(" + omega1 + ")")
-                    .variable("x")
-                    .build();
-            UnivariateFunction function1 = x -> {
-                expression1.setVariable("x", x);
-                return expression1.evaluate();
-            };
-            double integral1 = integrator.integrate(1000, function1, a, b);
-
-            Expression expression2 = new ExpressionBuilder("(" + f_averaged_str + ")*(" + omega2 + ")")
-                    .variable("x")
-                    .build();
-            UnivariateFunction function2 = x -> {
-                expression2.setVariable("x", x);
-                return expression2.evaluate();
-            };
-            double integral2 = integrator.integrate(1000, function2, a, b);
-
-            // Заполняем вектор правой части по формулам b_{2k-2} и b_{2k-1}
-            rightVector[2 * (k - 1)] = integral1;
-            rightVector[2 * (k - 1) + 1] = integral2;
+        for (int i = 0; i < m; i++) {
+            final int powI = i + 1;
+            for (int j = m; j < 2 * m; j++) {
+                final int powJ = j + 1 - m;
+                UnivariateFunction productFunc = x -> {
+                    double omegaI = Math.pow(x, powI) * (x - 1);
+                    double omegaJ = Math.pow(x, powJ) * (x - 1);
+                    return omegaI * omegaJ;
+                };
+                UnivariateFunction derivativeFunc = x -> {
+                    double dOmegaI = (powI + 1) * Math.pow(x, powI) - powI * Math.pow(x, powI - 1);
+                    double dOmegaJ = (powJ + 1) * Math.pow(x, powJ) - powJ * Math.pow(x, powJ - 1);
+                    return dOmegaI * dOmegaJ;
+                };
+                double integral1 = integrator.integrate(1000, productFunc, 0, 1);
+                double integral2 = integrator.integrate(1000, derivativeFunc, 0, 1);
+                matrix[i][j] = 1.0 / tau * integral1 + 0.5 * integral2;
+            }
+        }
+        // Переносим элементы на нужные места (создаем лесенку)
+        for (int k = 1; k < n; k++) {
+            int shift = k * m;
+            for (int i = 0; i < m; i++) {
+                for (int j = 0; j < m; j++) {
+                    // Копируем блок A
+                    matrix[shift + i][shift + j] = matrix[i][j];
+                    // Копируем блок B
+                    if (shift + m + j < matrix[0].length) {
+                        matrix[shift + i][shift + m + j] = matrix[i][j + m];
+                    }
+                }
+            }
+        }
+        // Заполнение периодического условия
+        for (int i = 0; i < m; i++) {
+            int row = n * m + i;
+            matrix[row][i] = 1.0;
+            matrix[row][n * m + i] = -1.0;
         }
 
-        System.out.println();
+        System.out.println("МАТРИЦА:");
+        int rows = matrix.length;
+        int cols = matrix[0].length;
+
+        for (int i = 0; i < rows; i++) {
+            for (int j = 0; j < cols; j++) {
+                System.out.printf("%10.4f ", matrix[i][j]);
+            }
+            System.out.println();
+        }
+
+
+        // Заполнение правого вектора
+        double[] rightVector = new double[(n + 1) * m];
+        double a = 0d; // Нижний предел интегрирования
+        double b = 1d; // Верхний предел интегрирования
+        for (int k = 1; k <= n; k++) {
+            double t_k = (double) k / n;
+            double t_k_minus_1 = (double) (k - 1) / n;
+            String f_at_tk = valueInPoint.get(t_k);
+            String f_at_tk_minus_1 = valueInPoint.get(t_k_minus_1);
+            String f_averaged_str = "((" + f_at_tk + ") + (" + f_at_tk_minus_1 + "))/2.0";
+            for (int i = 0; i < m; i++) {
+                String currentOmega = omegas.get(i);
+                Expression expression = new ExpressionBuilder("(" + f_averaged_str + ")*(" + currentOmega + ")")
+                        .variable("x")
+                        .build();
+                UnivariateFunction function = x -> {
+                    expression.setVariable("x", x);
+                    return expression.evaluate();
+                };
+                double integral = integrator.integrate(1000, function, a, b);
+                rightVector[(k - 1) * m + i] = integral;
+            }
+        }
+        System.out.println("ПРАВЫЙ ВЕКТОР: ");
+        System.out.println(Arrays.toString(rightVector));
 
         // Создаем объекты матрицы и вектора
         RealMatrix coefficients = MatrixUtils.createRealMatrix(matrix);
         RealVector constants = MatrixUtils.createRealVector(rightVector);
 
-        //создаем решатель и решаем суу
+        //создаем решатель и решаем слу
         DecompositionSolver solver = new LUDecomposition(coefficients).getSolver();
         RealVector solution = solver.solve(constants);
 
@@ -133,8 +170,6 @@ public class Main {
                     "(" + solution.getEntry(j++) + ")*(" + omega1 + ")+(" +
                             solution.getEntry(j++) + ")*(" + omega2 + ")");
         }
-
-        // System.out.println("Right Vector: "+ Arrays.toString(rightVector));
 
         Map<Double, String> currentMap = new HashMap<>(); //Точное решение
         String currentFunctionXT = "sin(2*"+Math.PI+"*x)*cos(2*"+Math.PI+"*t)";
@@ -160,7 +195,6 @@ public class Main {
                     .xAxisTitle("x").yAxisTitle("U(x)")
                     .build();
 
-            // Исправлено: правильные названия методов
             chart.getStyler().setLegendVisible(true);
             chart.getStyler().setDefaultSeriesRenderStyle(XYSeries.XYSeriesRenderStyle.Line);
 
@@ -196,7 +230,6 @@ public class Main {
             }
             globalMaxDiff = Math.max(globalMaxDiff, maxDiff);
 
-            // Добавление серий с настройкой цвета и стиля линии
             XYSeries approxSeries = chart.addSeries("Приближенное решение", xData, yApprox);
             approxSeries.setMarker(SeriesMarkers.NONE);
             approxSeries.setLineColor(Color.BLACK);
@@ -212,5 +245,9 @@ public class Main {
             System.out.printf("Максимальная разница для t = %.2f: %.6f\n", t, maxDiff);
         }
         System.out.printf("Глобальная максимальная разница: %.6f\n", globalMaxDiff);
+    }
+
+    private static String omegaGenerator(int i){
+        return "x^%s*(x-1)".formatted(i);
     }
 }
