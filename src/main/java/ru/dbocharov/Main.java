@@ -28,11 +28,12 @@ public class Main {
         System.out.println("Введите количество точек разбиения: ");
         int countPoint = scanner.nextInt();
         int n = countPoint + 1;
-        System.out.println("Введите функцию от x и t (например: sin(x)*t + x^2):");
+
+        System.out.println("Введите функцию правой части от x и t (например: sin(x)*t + x^2) или введите test:");
         scanner.nextLine();
         String inputFunctionXT = scanner.nextLine();
 
-        if (inputFunctionXT.equals("test")) {
+        if (inputFunctionXT.equalsIgnoreCase("test")) {
             inputFunctionXT = "2*"+Math.PI+"*sin(2*"+Math.PI+"*x)*(2*"+ Math.PI+"*cos(2*"+Math.PI+"*t)-sin(2*"+Math.PI+"*t))";
         }
 
@@ -43,13 +44,29 @@ public class Main {
 
         System.out.println("Введите количество базисных функций omega: ");
         int m = scanner.nextInt();
+        scanner.nextLine();
+
+        System.out.println("Введите точное решение u(x,t) (введите test для встроенного, или no если точное решение неизвестно):");
+        String exactSolutionInput = scanner.nextLine().trim();
+
+        boolean hasExactSolution = !exactSolutionInput.equalsIgnoreCase("no");
+        String exactFunctionXT = "";
+
+        if (hasExactSolution) {
+            if (exactSolutionInput.equalsIgnoreCase("test")) {
+                exactFunctionXT = "sin(2*"+Math.PI+"*x)*cos(2*"+Math.PI+"*t)";
+            } else {
+                exactFunctionXT = exactSolutionInput;
+            }
+        }
+
         List<String> omegas = new ArrayList<>();
         for (int i = 1; i <= m; i++) {
             omegas.add(omegaGenerator(i));
         }
 
         double tau = 1d / n;
-        double[][] matrix = new double[(n + 1) * m][m * (n + 1)];
+        double[][] matrix = new double[(n + 1) * m][(n + 1) * m];
         UnivariateIntegrator integrator = new SimpsonIntegrator();
 
         // Заполнение базовых блоков матрицы
@@ -89,7 +106,7 @@ public class Main {
             matrix[row][n * m + i] = -1.0;
         }
 
-        // Выволд матрицы
+        // Вывод матрицы
         System.out.println("Матрица:");
         int rows = matrix.length;
         int cols = matrix[0].length;
@@ -122,7 +139,6 @@ public class Main {
             }
         }
 
-        // Вывод вектора
         System.out.println("Правый вектор: ");
         System.out.println(Arrays.toString(rightVector));
 
@@ -131,7 +147,7 @@ public class Main {
         DecompositionSolver solver = new LUDecomposition(coefficients).getSolver();
         RealVector solution = solver.solve(constants);
 
-        // Сборка решения
+        // Сборка приближенного решения
         Map<Double, String> solutionOfTask = new HashMap<>();
         for (int i = 0; i <= n; i++) {
             String expr = "";
@@ -142,24 +158,26 @@ public class Main {
             solutionOfTask.put((double) i / n, expr);
         }
 
-        Map<Double, String> currentMap = new HashMap<>();
-        String currentFunctionXT = "sin(2*"+Math.PI+"*x)*cos(2*"+Math.PI+"*t)"; //точное решение для test - кейса
-        for (int i = 0; i <= n; i++) {
-            currentMap.put((double) i / n,
-                    currentFunctionXT.replaceAll("(?<![a-zA-Z])t(?![a-zA-Z])", String.valueOf((double) i / n)));
+        // Сборка точного решения (если оно задано)
+        Map<Double, String> exactMap = new HashMap<>();
+        if (hasExactSolution) {
+            for (int i = 0; i <= n; i++) {
+                exactMap.put((double) i / n,
+                        exactFunctionXT.replaceAll("(?<![a-zA-Z])t(?![a-zA-Z])", String.valueOf((double) i / n)));
+            }
         }
 
-        plotExactAndApproxSolutions(solutionOfTask, currentMap);
+        plotExactAndApproxSolutions(solutionOfTask, exactMap, hasExactSolution);
     }
 
-    public static void plotExactAndApproxSolutions(Map<Double, String> approxMap, Map<Double, String> exactMap) {
+    // Метод отрисовки
+    public static void plotExactAndApproxSolutions(Map<Double, String> approxMap, Map<Double, String> exactMap, boolean hasExactSolution) {
         double globalMaxDiff = 0;
         List<Double> sortedKeys = new ArrayList<>(approxMap.keySet());
         Collections.sort(sortedKeys);
 
         for (Double t : sortedKeys) {
             String approxExprStr = approxMap.get(t);
-            String exactExprStr = exactMap.get(t);
 
             XYChart chart = new XYChartBuilder()
                     .width(800).height(600)
@@ -171,7 +189,12 @@ public class Main {
             chart.getStyler().setDefaultSeriesRenderStyle(XYSeries.XYSeriesRenderStyle.Line);
 
             Expression approxExpr = new ExpressionBuilder(approxExprStr).variable("x").build();
-            Expression exactExpr = new ExpressionBuilder(exactExprStr).variable("x").build();
+            Expression exactExpr = null;
+
+            if (hasExactSolution) {
+                String exactExprStr = exactMap.get(t);
+                exactExpr = new ExpressionBuilder(exactExprStr).variable("x").build();
+            }
 
             int points = 100;
             double[] xData = new double[points];
@@ -182,29 +205,43 @@ public class Main {
             for (int i = 0; i < points; i++) {
                 double x = i / (double) (points - 1);
                 xData[i] = x;
+
+                // Вычисляем приближенное
                 double approxVal = approxExpr.setVariable("x", x).evaluate();
-                double exactVal = exactExpr.setVariable("x", x).evaluate();
                 yApprox[i] = approxVal;
-                yExact[i] = exactVal;
-                maxDiff = Math.max(maxDiff, Math.abs(approxVal - exactVal));
+
+                // Вычисляем точное, только если оно есть
+                if (hasExactSolution) {
+                    double exactVal = exactExpr.setVariable("x", x).evaluate();
+                    yExact[i] = exactVal;
+                    maxDiff = Math.max(maxDiff, Math.abs(approxVal - exactVal));
+                }
             }
-            globalMaxDiff = Math.max(globalMaxDiff, maxDiff);
 
             XYSeries approxSeries = chart.addSeries("Приближенное решение", xData, yApprox);
             approxSeries.setMarker(SeriesMarkers.NONE);
             approxSeries.setLineColor(Color.BLACK);
             approxSeries.setLineStyle(SeriesLines.SOLID);
 
-            XYSeries exactSeries = chart.addSeries("Точное решение", xData, yExact);
-            exactSeries.setMarker(SeriesMarkers.NONE);
-            exactSeries.setLineColor(Color.BLACK);
-            exactSeries.setLineStyle(SeriesLines.DASH_DASH);
+            if (hasExactSolution) {
+                globalMaxDiff = Math.max(globalMaxDiff, maxDiff);
+
+                XYSeries exactSeries = chart.addSeries("Точное решение", xData, yExact);
+                exactSeries.setMarker(SeriesMarkers.NONE);
+                exactSeries.setLineColor(Color.BLACK);
+                exactSeries.setLineStyle(SeriesLines.DASH_DASH);
+
+                System.out.printf("Максимальная разница для t = %.2f: %.6f\n", t, maxDiff);
+            }
 
             new SwingWrapper<>(chart).displayChart();
-
-            System.out.printf("Максимальная разница для t = %.2f: %.6f\n", t, maxDiff);
         }
-        System.out.printf("Глобальная максимальная разница: %.6f\n", globalMaxDiff);
+
+        if (hasExactSolution) {
+            System.out.printf("\nГлобальная максимальная разница: %.6f\n", globalMaxDiff);
+        } else {
+            System.out.println("\nТочное решение не задано, погрешности не вычислялись.");
+        }
     }
 
     private static String omegaGenerator(int i){
