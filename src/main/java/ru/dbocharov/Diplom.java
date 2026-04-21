@@ -2,9 +2,6 @@ package ru.dbocharov;
 
 import net.objecthunter.exp4j.Expression;
 import net.objecthunter.exp4j.ExpressionBuilder;
-import org.apache.commons.math3.analysis.UnivariateFunction;
-import org.apache.commons.math3.analysis.integration.SimpsonIntegrator;
-import org.apache.commons.math3.analysis.integration.UnivariateIntegrator;
 import org.apache.commons.math3.linear.*;
 import org.knowm.xchart.XChartPanel;
 import org.knowm.xchart.XYChart;
@@ -23,7 +20,7 @@ import java.util.List;
 
 public class Diplom extends JFrame {
 
-    private JTextField tfPoints, tfM, tfRightFunc, tfExactFunc;
+    private JTextField tfPoints, tfM, tfA, tfB, tfRightFunc, tfExactFunc;
     private JTextArea logArea;
     private JButton btnCalculate;
 
@@ -41,32 +38,41 @@ public class Diplom extends JFrame {
             e.printStackTrace();
         }
 
-        setTitle("Проекционно-разностный метод (Кранк-Николсон)");
-        setSize(1100, 700);
+        setTitle("Проекционно-разностный метод (SVD Псевдообратная матрица)");
+        setSize(1150, 750);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
-        splitPane.setDividerLocation(400);
+        splitPane.setDividerLocation(420);
 
         JPanel leftPanel = new JPanel(new BorderLayout(10, 10));
         leftPanel.setBorder(new EmptyBorder(10, 10, 10, 10));
 
-        JPanel inputPanel = new JPanel(new GridLayout(8, 1, 5, 5));
+        JPanel inputPanel = new JPanel(new GridLayout(12, 1, 5, 2));
+
         inputPanel.add(new JLabel("Количество точек разбиения по времени (n):"));
-        tfPoints = new JTextField("");
+        tfPoints = new JTextField("10");
         inputPanel.add(tfPoints);
 
         inputPanel.add(new JLabel("Количество базисных функций (m):"));
-        tfM = new JTextField("");
+        tfM = new JTextField("5");
         inputPanel.add(tfM);
 
+        inputPanel.add(new JLabel("Начало отрезка по x (a):"));
+        tfA = new JTextField("0");
+        inputPanel.add(tfA);
+
+        inputPanel.add(new JLabel("Конец отрезка по x (b):"));
+        tfB = new JTextField("1");
+        inputPanel.add(tfB);
+
         inputPanel.add(new JLabel("Функция f(x,t) [или test]:"));
-        tfRightFunc = new JTextField("");
+        tfRightFunc = new JTextField("test");
         inputPanel.add(tfRightFunc);
 
         inputPanel.add(new JLabel("Точное решение u(x,t) [test, no или формула]:"));
-        tfExactFunc = new JTextField("");
+        tfExactFunc = new JTextField("test");
         inputPanel.add(tfExactFunc);
 
         JPanel btnPanel = new JPanel(new BorderLayout());
@@ -149,21 +155,30 @@ public class Diplom extends JFrame {
         timeSlider.setEnabled(false);
 
         int countPoint, m;
+        double a, b;
         String rightFuncText = tfRightFunc.getText().trim();
         String exactFuncText = tfExactFunc.getText().trim();
 
         try {
             countPoint = Integer.parseInt(tfPoints.getText().trim());
             m = Integer.parseInt(tfM.getText().trim());
+            a = Double.parseDouble(tfA.getText().trim().replace(",", "."));
+            b = Double.parseDouble(tfB.getText().trim().replace(",", "."));
+
+            if (a >= b) {
+                System.out.println("Ошибка: Начало отрезка (a) должно быть меньше конца (b)!");
+                resetButton();
+                return;
+            }
         } catch (NumberFormatException ex) {
-            System.out.println("Ошибка: Поля n и m должны быть целыми числами!");
+            System.out.println("Ошибка: Поля n и m должны быть целыми, а a и b - числами!");
             resetButton();
             return;
         }
 
         new Thread(() -> {
             try {
-                runMathLogic(countPoint, m, rightFuncText, exactFuncText);
+                runMathLogic(countPoint, m, rightFuncText, exactFuncText, a, b);
             } catch (Exception ex) {
                 System.out.println("\n--- ПРОИЗОШЛА ОШИБКА ---");
                 ex.printStackTrace(System.out);
@@ -177,11 +192,29 @@ public class Diplom extends JFrame {
         SwingUtilities.invokeLater(() -> {
             btnCalculate.setEnabled(true);
             btnCalculate.setText("Вычислить");
+            timeSlider.setEnabled(true);
         });
     }
 
-    private void runMathLogic(int countPoint, int m, String inputFunctionXT, String exactSolutionInput) {
+    private double fastSimpsonIntegrate(Function f, double a, double b, int n) {
+        if (n % 2 != 0) n++;
+        double h = (b - a) / n;
+        double sum = f.evaluate(a) + f.evaluate(b);
+
+        for (int i = 1; i < n; i++) {
+            double x = a + i * h;
+            sum += f.evaluate(x) * (i % 2 == 0 ? 2 : 4);
+        }
+        return sum * h / 3.0;
+    }
+
+    private interface Function {
+        double evaluate(double x);
+    }
+
+    private void runMathLogic(int countPoint, int m, String inputFunctionXT, String exactSolutionInput, double a, double b) {
         int n = countPoint + 1;
+        double L = b - a;
         Map<Double, String> valueInPoint = new HashMap<>();
 
         if (inputFunctionXT.equalsIgnoreCase("test")) {
@@ -200,23 +233,34 @@ public class Diplom extends JFrame {
 
         List<String> omegas = new ArrayList<>();
         for (int i = 1; i <= m; i++) {
-            omegas.add(omegaGenerator(i));
+            omegas.add(omegaGenerator(i, a, b, L));
         }
 
         double tau = 1d / n;
         double[][] matrix = new double[(n + 1) * m][(n + 1) * m];
-        UnivariateIntegrator integrator = new SimpsonIntegrator();
 
-        System.out.println("Шаг 1: Формирование матрицы...");
+        System.out.println("Шаг 1: Формирование матрицы Грама...");
         for (int i = 0; i < m; i++) {
             final int powI = i + 1;
             for (int j = 0; j < m; j++) {
                 final int powJ = j + 1;
-                UnivariateFunction productFunc = x -> (Math.pow(x, powI) * (x - 1)) * (Math.pow(x, powJ) * (x - 1));
-                UnivariateFunction derivativeFunc = x -> ((powI + 1) * Math.pow(x, powI) - powI * Math.pow(x, powI - 1)) * ((powJ + 1) * Math.pow(x, powJ) - powJ * Math.pow(x, powJ - 1));
 
-                double integral1 = integrator.integrate(1000000, productFunc, 0, 1);
-                double integral2 = integrator.integrate(1000000, derivativeFunc, 0, 1);
+                Function productFunc = x -> {
+                    double xi = (x - a) / L;
+                    double xb = (x - b) / L;
+                    return (Math.pow(xi, powI) * xb) * (Math.pow(xi, powJ) * xb);
+                };
+
+                Function derivativeFunc = x -> {
+                    double xi = (x - a) / L;
+                    double xb = (x - b) / L;
+                    double d1 = (powI * Math.pow(xi, powI - 1) * xb + Math.pow(xi, powI)) / L;
+                    double d2 = (powJ * Math.pow(xi, powJ - 1) * xb + Math.pow(xi, powJ)) / L;
+                    return d1 * d2;
+                };
+
+                double integral1 = fastSimpsonIntegrate(productFunc, a, b, 1000);
+                double integral2 = fastSimpsonIntegrate(derivativeFunc, a, b, 1000);
 
                 matrix[i][j] = -1.0 / tau * integral1 + 0.5 * integral2;
                 matrix[i][j + m] = 1.0 / tau * integral1 + 0.5 * integral2;
@@ -241,7 +285,7 @@ public class Diplom extends JFrame {
             matrix[row][n * m + i] = -1.0;
         }
 
-        System.out.println("\nШаг 2: Формирование правого вектора...");
+        System.out.println("Шаг 2: Формирование правого вектора...");
         double[] rightVector = new double[(n + 1) * m];
         for (int k = 1; k <= n; k++) {
             double t_k = (double) k / n;
@@ -249,31 +293,41 @@ public class Diplom extends JFrame {
             String f_at_tk = valueInPoint.get(t_k);
             String f_at_tk_minus_1 = valueInPoint.get(t_k_minus_1);
             String f_averaged_str = "((" + f_at_tk + ") + (" + f_at_tk_minus_1 + "))/2.0";
+
             for (int i = 0; i < m; i++) {
                 String currentOmega = omegas.get(i);
                 Expression expression = new ExpressionBuilder("(" + f_averaged_str + ")*(" + currentOmega + ")").variable("x").build();
-                UnivariateFunction function = x -> {
-                    expression.setVariable("x", x);
-                    return expression.evaluate();
+
+                Function function = x -> {
+                    return expression.setVariable("x", x).evaluate();
                 };
-                rightVector[(k - 1) * m + i] = integrator.integrate(1000000, function, 0d, 1d);
+
+                rightVector[(k - 1) * m + i] = fastSimpsonIntegrate(function, a, b, 500);
             }
         }
 
-        System.out.println("Шаг 3: Решение системы СЛАУ...");
+        System.out.println("Шаг 3: Решение СЛАУ через SVD (Псевдообратная матрица)...");
         RealMatrix coefficients = MatrixUtils.createRealMatrix(matrix);
         RealVector constants = MatrixUtils.createRealVector(rightVector);
-        DecompositionSolver solver = new LUDecomposition(coefficients).getSolver();
+
+        // ВОТ ЗДЕСЬ ИСПОЛЬЗУЕТСЯ SVD ДЛЯ НАХОЖДЕНИЯ ПСЕВДООБРАТНОЙ МАТРИЦЫ!
+        SingularValueDecomposition svd = new SingularValueDecomposition(coefficients);
+        DecompositionSolver solver = svd.getSolver();
+
+        System.out.println("Обусловленность матрицы: " + svd.getConditionNumber());
+        if (!solver.isNonSingular()) {
+            System.out.println("ВНИМАНИЕ: Матрица вырождена! Применяется псевдообратная матрица Мура-Пенроуза.");
+        }
+
         RealVector solution = solver.solve(constants);
 
-        Map<Double, String> solutionOfTask = new HashMap<>();
+        Map<Double, double[]> solutionOfTask = new HashMap<>();
         for (int i = 0; i <= n; i++) {
-            String expr = "";
+            double[] coeffs = new double[m];
             for (int k = 0; k < m; k++) {
-                if (k > 0) expr += "+";
-                expr += "(" + solution.getEntry(i * m + k) + ")*(" + omegas.get(k) + ")";
+                coeffs[k] = solution.getEntry(i * m + k);
             }
-            solutionOfTask.put((double) i / n, expr);
+            solutionOfTask.put((double) i / n, coeffs);
         }
 
         Map<Double, String> exactMap = new HashMap<>();
@@ -284,11 +338,11 @@ public class Diplom extends JFrame {
         }
 
         System.out.println("Шаг 4: Построение графиков...");
-        generateCharts(solutionOfTask, exactMap, hasExactSolution);
-        System.out.println("Вычисления завершены! Используйте ползунок справа для просмотра графиков.");
+        generateCharts(solutionOfTask, exactMap, hasExactSolution, a, b, L);
+        System.out.println("Вычисления завершены!");
     }
 
-    private void generateCharts(Map<Double, String> approxMap, Map<Double, String> exactMap, boolean hasExactSolution) {
+    private void generateCharts(Map<Double, double[]> approxMap, Map<Double, String> exactMap, boolean hasExactSolution, double a, double b, double L) {
         generatedCharts = new ArrayList<>();
         generatedTimes = new ArrayList<>();
         double globalMaxDiff = 0;
@@ -298,7 +352,7 @@ public class Diplom extends JFrame {
 
         for (Double t : sortedKeys) {
             generatedTimes.add(t);
-            String approxExprStr = approxMap.get(t);
+            double[] coeffs = approxMap.get(t);
 
             XYChart chart = new XYChartBuilder()
                     .width(800).height(600)
@@ -309,7 +363,6 @@ public class Diplom extends JFrame {
             chart.getStyler().setLegendVisible(true);
             chart.getStyler().setDefaultSeriesRenderStyle(XYSeries.XYSeriesRenderStyle.Line);
 
-            Expression approxExpr = new ExpressionBuilder(approxExprStr).variable("x").build();
             Expression exactExpr = null;
             if (hasExactSolution) {
                 exactExpr = new ExpressionBuilder(exactMap.get(t)).variable("x").build();
@@ -322,9 +375,15 @@ public class Diplom extends JFrame {
             double maxDiff = 0;
 
             for (int i = 0; i < points; i++) {
-                double x = i / (double) (points - 1);
+                double x = a + i * (b - a) / (points - 1);
                 xData[i] = x;
-                double approxVal = approxExpr.setVariable("x", x).evaluate();
+
+                double approxVal = 0;
+                for (int k = 0; k < coeffs.length; k++) {
+                    double xi = (x - a) / L;
+                    double xb = (x - b) / L;
+                    approxVal += coeffs[k] * Math.pow(xi, k + 1) * xb;
+                }
                 yApprox[i] = approxVal;
 
                 if (hasExactSolution) {
@@ -336,7 +395,7 @@ public class Diplom extends JFrame {
 
             XYSeries approxSeries = chart.addSeries("Приближенное решение", xData, yApprox);
             approxSeries.setMarker(SeriesMarkers.NONE);
-            approxSeries.setLineColor(Color.RED); // Сделал красным, чтобы лучше выделялось
+            approxSeries.setLineColor(Color.RED);
             approxSeries.setLineStyle(SeriesLines.SOLID);
 
             if (hasExactSolution) {
@@ -359,13 +418,12 @@ public class Diplom extends JFrame {
         SwingUtilities.invokeLater(() -> {
             timeSlider.setMaximum(generatedCharts.size() - 1);
             timeSlider.setValue(0);
-            timeSlider.setEnabled(true);
             displayChartAtIndex(0);
         });
     }
 
-    private String omegaGenerator(int i) {
-        return "x^%s*(x-1)".formatted(i);
+    private String omegaGenerator(int i, double a, double b, double L) {
+        return "(((x-(" + a + "))/" + L + ")^" + i + "*((x-(" + b + "))/" + L + "))";
     }
 
     private void redirectSystemOut() {
@@ -374,10 +432,12 @@ public class Diplom extends JFrame {
             public void write(int b) {
                 updateTextArea(String.valueOf((char) b));
             }
+
             @Override
             public void write(byte[] b, int off, int len) {
                 updateTextArea(new String(b, off, len));
             }
+
             private void updateTextArea(final String text) {
                 SwingUtilities.invokeLater(() -> {
                     logArea.append(text);
