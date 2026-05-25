@@ -384,7 +384,6 @@ public class Diplom extends JFrame {
         SingularValueDecomposition svd = new SingularValueDecomposition(coefficients);
         DecompositionSolver solver = svd.getSolver();
 
-        System.out.println("Обусловленность матрицы: " + svd.getConditionNumber());
         if (!solver.isNonSingular()) {
             System.out.println("ВНИМАНИЕ: Матрица вырождена! Применяется псевдообратная матрица Мура-Пенроуза.");
         }
@@ -409,14 +408,14 @@ public class Diplom extends JFrame {
             }
         }
 
-        System.out.println("Шаг 4: Построение графиков...");
+        System.out.println("Шаг 4: Построение графиков и расчет погрешности...");
         generateCharts(solutionOfTask, exactMap, hasExactSolution, a, b, L);
         System.out.println("Вычисления завершены!");
     }
 
     /**
      * Генерирует графики (приближенное и точное решения) для каждого временного шага t_k
-     * и вычисляет глобальную погрешность метода.
+     * и вычисляет глобальные погрешности метода (Чебышева и энергетическую).
      *
      * @param approxMap Мапа с найденными коэффициентами полинома для каждого шага t
      * @param exactMap Мапа со строковым представлением точного решения
@@ -490,14 +489,68 @@ public class Diplom extends JFrame {
                 exactSeries.setLineColor(Color.BLACK);
                 exactSeries.setLineStyle(SeriesLines.DASH_DASH);
 
-                System.out.printf("Погрешность t=%.2f : %.6f\n", t, maxDiff);
+                System.out.printf("Погрешность t=%.2f : %.8f\n", t, maxDiff);
             }
 
             generatedCharts.add(chart);
         }
 
         if (hasExactSolution) {
-            System.out.printf("\nГЛОБАЛЬНАЯ ПОГРЕШНОСТЬ: %.6f\n", globalMaxDiff);
+            // Вывод глобальной погрешности
+            System.out.printf("\nГлобальная погрешность (max): %.8f\n", globalMaxDiff);
+
+            // Расчёт энергетической погрешности
+            double energyErrorIntegralSum = 0.0;
+            double h_diff = 1e-5; // Малый шаг для численного дифференцирования точного решения
+
+            for (Double t : sortedKeys) {
+                double[] coeffs = approxMap.get(t);
+                Expression exactExpr = new ExpressionBuilder(exactMap.get(t)).variable("x").build();
+
+                // Подынтегральная функция для каждого временного шага
+                Function integrand = x -> {
+                    // 1. Точное решение и его производная по x (считаем центральной разностью)
+                    double u_ex = exactExpr.setVariable("x", x).evaluate();
+                    double u_ex_plus = exactExpr.setVariable("x", x + h_diff).evaluate();
+                    double u_ex_minus = exactExpr.setVariable("x", x - h_diff).evaluate();
+                    double du_ex = (u_ex_plus - u_ex_minus) / (2.0 * h_diff);
+
+                    // 2. Приближенное решение и его аналитическая производная
+                    double u_app = 0;
+                    double du_app = 0;
+
+                    for (int k = 0; k < coeffs.length; k++) {
+                        int powI = k + 1;
+                        double xi = (x - a) / L;
+                        double xb = (x - b) / L;
+
+                        // Значение базисной функции
+                        u_app += coeffs[k] * Math.pow(xi, powI) * xb;
+
+                        // Значение производной базисной функции
+                        double term1 = (powI / L) * Math.pow(xi, powI - 1) * xb;
+                        double term2 = (1.0 / L) * Math.pow(xi, powI);
+                        du_app += coeffs[k] * (term1 + term2);
+                    }
+
+                    // 3. Формула под интегралом: |u - u^h|^2 + |u' - u^h'|^2
+                    double diff_u = Math.abs(u_ex - u_app);
+                    double diff_du = Math.abs(du_ex - du_app);
+
+                    return (diff_u * diff_u) + (diff_du * diff_du);
+                };
+
+                // Интегрируем полученную функцию по пространственному отрезку [a, b]
+                double integralVal = fastSimpsonIntegrate(integrand, a, b, 1000);
+                energyErrorIntegralSum += integralVal;
+            }
+
+            // Умножаем на шаг по времени tau
+            double tau = 1.0 / (sortedKeys.size() - 1); // n это (количество слоев - 1)
+            double energyNorm = energyErrorIntegralSum * tau;
+
+            // Вывод энергетической погрешности
+            System.out.printf("Энергетическая погрешность: %.8f\n", energyNorm);
         }
 
         // Возврат в UI поток для обновления слайдера
