@@ -378,9 +378,6 @@ public class Diplom extends JFrame {
         RealVector constants = MatrixUtils.createRealVector(rightVector);
 
         // Использование псевднообратной матрицы(SVD) гарантирует нахождение решения даже для вырожденных матриц.
-        // Если базис (m) слишком велик, матрица Грама становится плохо обусловленной.
-        // Обычный метод Гаусса упадет с ошибкой SingularMatrixException.
-        // SVD автоматически вычисляет псевдообратную матрицу Мура-Пенроуза и находит оптимальное решение.
         SingularValueDecomposition svd = new SingularValueDecomposition(coefficients);
         DecompositionSolver solver = svd.getSolver();
 
@@ -415,23 +412,16 @@ public class Diplom extends JFrame {
 
     /**
      * Генерирует графики (приближенное и точное решения) для каждого временного шага t_k
-     * и вычисляет глобальные погрешности метода (Чебышева и энергетическую).
-     *
-     * @param approxMap Мапа с найденными коэффициентами полинома для каждого шага t
-     * @param exactMap Мапа со строковым представлением точного решения
-     * @param hasExactSolution Флаг наличия точного решения
-     * @param a Начало отрезка
-     * @param b Конец отрезка
-     * @param L Длина отрезка (для нормировки)
+     * и вычисляет новые глобальные погрешности метода (на полуцелых слоях).
      */
     private void generateCharts(Map<Double, double[]> approxMap, Map<Double, String> exactMap, boolean hasExactSolution, double a, double b, double L) {
         generatedCharts = new ArrayList<>();
         generatedTimes = new ArrayList<>();
-        double globalMaxDiff = 0;
 
         List<Double> sortedKeys = new ArrayList<>(approxMap.keySet());
         Collections.sort(sortedKeys);
 
+        // Отрисовка графиков по слоям (строится на целых шагах t_k)
         for (Double t : sortedKeys) {
             generatedTimes.add(t);
             double[] coeffs = approxMap.get(t);
@@ -454,10 +444,8 @@ public class Diplom extends JFrame {
             double[] xData = new double[points];
             double[] yApprox = new double[points];
             double[] yExact = new double[points];
-            double maxDiff = 0;
 
             for (int i = 0; i < points; i++) {
-                // Равномерный шаг по оси X от a до b
                 double x = a + i * (b - a) / (points - 1);
                 xData[i] = x;
 
@@ -470,10 +458,7 @@ public class Diplom extends JFrame {
                 yApprox[i] = approxVal;
 
                 if (hasExactSolution) {
-                    double exactVal = exactExpr.setVariable("x", x).evaluate();
-                    yExact[i] = exactVal;
-                    // Обновление локальной погрешности
-                    maxDiff = Math.max(maxDiff, Math.abs(approxVal - exactVal));
+                    yExact[i] = exactExpr.setVariable("x", x).evaluate();
                 }
             }
 
@@ -483,74 +468,114 @@ public class Diplom extends JFrame {
             approxSeries.setLineStyle(SeriesLines.SOLID);
 
             if (hasExactSolution) {
-                globalMaxDiff = Math.max(globalMaxDiff, maxDiff);
                 XYSeries exactSeries = chart.addSeries("Точное решение", xData, yExact);
                 exactSeries.setMarker(SeriesMarkers.NONE);
                 exactSeries.setLineColor(Color.BLACK);
                 exactSeries.setLineStyle(SeriesLines.DASH_DASH);
-
-                System.out.printf("Погрешность t=%.2f : %.8f\n", t, maxDiff);
             }
 
             generatedCharts.add(chart);
         }
 
+        // Блок расчёта формул погрешности
         if (hasExactSolution) {
-            // Вывод глобальной погрешности
-            System.out.printf("\nГлобальная погрешность (max): %.8f\n", globalMaxDiff);
+            int n_layers = sortedKeys.size() - 1;
+            double tau = 1.0 / n_layers;
+            double h_diff = 1e-5; // Малый шаг для численного дифференцирования
 
-            // Расчёт энергетической погрешности
-            double energyErrorIntegralSum = 0.0;
-            double h_diff = 1e-5; // Малый шаг для численного дифференцирования точного решения
+            double maxErrorFormula1 = 0.0;
+            double energyErrorIntegralSumFormula2 = 0.0;
 
-            for (Double t : sortedKeys) {
-                double[] coeffs = approxMap.get(t);
-                Expression exactExpr = new ExpressionBuilder(exactMap.get(t)).variable("x").build();
+            // Пробегаем по всем интервалам (k от 1 до n)
+            for (int k = 1; k <= n_layers; k++) {
+                double tk = sortedKeys.get(k);
+                double tk_minus_1 = sortedKeys.get(k - 1);
 
-                // Подынтегральная функция для каждого временного шага
+                double[] coeffs_k = approxMap.get(tk);
+                double[] coeffs_k_minus_1 = approxMap.get(tk_minus_1);
+
+                Expression exactExpr_k = new ExpressionBuilder(exactMap.get(tk)).variable("x").build();
+                Expression exactExpr_k_minus_1 = new ExpressionBuilder(exactMap.get(tk_minus_1)).variable("x").build();
+
+                // Первая энергетическая оценка погрешности
+                int checkPoints = 1000;
+                for (int i = 0; i < checkPoints; i++) {
+                    double x = a + i * (b - a) / (checkPoints - 1);
+
+                    double exact_k = exactExpr_k.setVariable("x", x).evaluate();
+                    double exact_k_minus_1 = exactExpr_k_minus_1.setVariable("x", x).evaluate();
+                    double exact_avg = (exact_k + exact_k_minus_1) / 2.0;
+
+                    double app_k = 0;
+                    double app_k_minus_1 = 0;
+                    for (int j = 0; j < coeffs_k.length; j++) {
+                        double xi = (x - a) / L;
+                        double xb = (x - b) / L;
+                        double basisVal = Math.pow(xi, j + 1) * xb;
+                        app_k += coeffs_k[j] * basisVal;
+                        app_k_minus_1 += coeffs_k_minus_1[j] * basisVal;
+                    }
+                    double approx_avg = (app_k + app_k_minus_1) / 2.0;
+
+                    maxErrorFormula1 = Math.max(maxErrorFormula1, Math.abs(exact_avg - approx_avg));
+                }
+
+                // Вторая энергетическая оценка погрешности
                 Function integrand = x -> {
-                    // 1. Точное решение и его производная по x (считаем центральной разностью)
-                    double u_ex = exactExpr.setVariable("x", x).evaluate();
-                    double u_ex_plus = exactExpr.setVariable("x", x + h_diff).evaluate();
-                    double u_ex_minus = exactExpr.setVariable("x", x - h_diff).evaluate();
-                    double du_ex = (u_ex_plus - u_ex_minus) / (2.0 * h_diff);
+                    // Точное решение и его производная центральной разностью
+                    double ex_k = exactExpr_k.setVariable("x", x).evaluate();
+                    double ex_k_plus = exactExpr_k.setVariable("x", x + h_diff).evaluate();
+                    double ex_k_minus = exactExpr_k.setVariable("x", x - h_diff).evaluate();
+                    double du_ex_k = (ex_k_plus - ex_k_minus) / (2.0 * h_diff);
 
-                    // 2. Приближенное решение и его аналитическая производная
-                    double u_app = 0;
-                    double du_app = 0;
+                    double ex_km1 = exactExpr_k_minus_1.setVariable("x", x).evaluate();
+                    double ex_km1_plus = exactExpr_k_minus_1.setVariable("x", x + h_diff).evaluate();
+                    double ex_km1_minus = exactExpr_k_minus_1.setVariable("x", x - h_diff).evaluate();
+                    double du_ex_km1 = (ex_km1_plus - ex_km1_minus) / (2.0 * h_diff);
 
-                    for (int k = 0; k < coeffs.length; k++) {
-                        int powI = k + 1;
+                    double exact_u_avg = (ex_k + ex_km1) / 2.0;
+                    double exact_du_avg = (du_ex_k + du_ex_km1) / 2.0;
+
+                    // Приближенное решение и его аналитическая производная
+                    double app_u_k = 0, app_du_k = 0;
+                    double app_u_km1 = 0, app_du_km1 = 0;
+
+                    for (int j = 0; j < coeffs_k.length; j++) {
+                        int powI = j + 1;
                         double xi = (x - a) / L;
                         double xb = (x - b) / L;
 
-                        // Значение базисной функции
-                        u_app += coeffs[k] * Math.pow(xi, powI) * xb;
-
-                        // Значение производной базисной функции
+                        double u_val = Math.pow(xi, powI) * xb;
                         double term1 = (powI / L) * Math.pow(xi, powI - 1) * xb;
                         double term2 = (1.0 / L) * Math.pow(xi, powI);
-                        du_app += coeffs[k] * (term1 + term2);
+                        double du_val = term1 + term2;
+
+                        app_u_k += coeffs_k[j] * u_val;
+                        app_du_k += coeffs_k[j] * du_val;
+
+                        app_u_km1 += coeffs_k_minus_1[j] * u_val;
+                        app_du_km1 += coeffs_k_minus_1[j] * du_val;
                     }
 
-                    // 3. Формула под интегралом: |u - u^h|^2 + |u' - u^h'|^2
-                    double diff_u = Math.abs(u_ex - u_app);
-                    double diff_du = Math.abs(du_ex - du_app);
+                    double approx_u_avg = (app_u_k + app_u_km1) / 2.0;
+                    double approx_du_avg = (app_du_k + app_du_km1) / 2.0;
+
+                    double diff_u = Math.abs(exact_u_avg - approx_u_avg);
+                    double diff_du = Math.abs(exact_du_avg - approx_du_avg);
 
                     return (diff_u * diff_u) + (diff_du * diff_du);
                 };
 
-                // Интегрируем полученную функцию по пространственному отрезку [a, b]
-                double integralVal = fastSimpsonIntegrate(integrand, a, b, 1000);
-                energyErrorIntegralSum += integralVal;
+                // Интегрируем полученную квадратичную функцию по [a,b] и добавляем к общей сумме
+                energyErrorIntegralSumFormula2 += fastSimpsonIntegrate(integrand, a, b, 1000);
             }
 
-            // Умножаем на шаг по времени tau
-            double tau = 1.0 / (sortedKeys.size() - 1); // n это (количество слоев - 1)
-            double energyNorm = energyErrorIntegralSum * tau;
+            // Умножаем общую сумму интегралов на шаг по времени tau (завершение Формулы 2)
+            double finalEnergyError = energyErrorIntegralSumFormula2 * tau;
 
-            // Вывод энергетической погрешности
-            System.out.printf("Энергетическая погрешность: %.8f\n", energyNorm);
+            // Вывод новых результатов в консоль программы
+            System.out.printf("\nПервая энергетическая оценка погрешности: %.8f\n", maxErrorFormula1);
+            System.out.printf("Вторая энергетическая оценка погрешности: %.8f\n", finalEnergyError);
         }
 
         // Возврат в UI поток для обновления слайдера
@@ -564,11 +589,6 @@ public class Diplom extends JFrame {
     /**
      * Генерирует текстовое представление базисной функции для передачи в парсер.
      * Реализует масштабирование (нормировку) аргумента для сохранения устойчивости интегратора.
-     * @param i Номер базисной функции (степень)
-     * @param a Начало отрезка
-     * @param b Конец отрезка
-     * @param L Нормировочная длина
-     * @return Строка вида "(((x-a)/L)^i * ((x-b)/L))"
      */
     private String omegaGenerator(int i, double a, double b, double L) {
         return "(((x-(" + a + "))/" + L + ")^" + i + "*((x-(" + b + "))/" + L + "))";
